@@ -4,7 +4,7 @@ import { searchDatabase, generateLicenseKey, getActiveKeys } from '../services/m
 import { 
     Search, Scan, Activity, Shield, 
     Info, Database, Check, Lock, Key, 
-    Terminal, Copy, RefreshCw
+    Terminal, Copy, RefreshCw, AlertTriangle, XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -15,7 +15,10 @@ interface DashboardProps {
 export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  
+  // Refined Loading States
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'empty' | 'error'>('idle');
+  
   const [activeModule, setActiveModule] = useState<string>('stealer');
   const [copiedStates, setCopiedStates] = useState<{[key: string]: boolean}>({});
 
@@ -33,13 +36,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
 
-    setIsLoading(true);
+    setStatus('loading');
     setResults([]); // Clear previous results
     
-    // Real API call (Logic from service)
-    const data = await searchDatabase(query);
-    setResults(data);
-    setIsLoading(false);
+    try {
+        const data = await searchDatabase(query);
+        
+        if (data && data.length > 0) {
+            setResults(data);
+            setStatus('success');
+        } else {
+            setStatus('empty');
+        }
+    } catch (error) {
+        console.error("Search failed:", error);
+        setStatus('error');
+    }
   };
 
   const copyToClipboard = (text: string, key: string) => {
@@ -128,6 +140,128 @@ export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
       </div>
   );
 
+  // Helper to render the content based on status
+  const renderContent = () => {
+    if (status === 'loading') {
+        return (
+            <div className="h-full flex flex-col items-center justify-center text-gray-600 space-y-4">
+                <div className="w-6 h-6 border-2 border-t-red-500 border-red-900/20 rounded-full animate-spin"></div>
+                <span className="text-xs font-mono">ESTABLISHING_UPLINK...</span>
+            </div>
+        );
+    }
+
+    if (status === 'error') {
+        return (
+            <div className="h-full flex flex-col items-center justify-center text-red-900/50 space-y-2">
+                <div className="w-12 h-12 rounded-2xl bg-red-950/20 flex items-center justify-center mb-2 border border-red-900/30">
+                    <AlertTriangle className="w-6 h-6 text-red-500" />
+                </div>
+                <span className="text-xs font-bold text-red-500">CONNECTION_FAILED</span>
+                <span className="text-[10px] text-red-800/80 font-mono">NODE_UNREACHABLE_OR_RATE_LIMITED</span>
+            </div>
+        );
+    }
+
+    if (status === 'empty') {
+        return (
+            <div className="h-full flex flex-col items-center justify-center text-gray-700 space-y-2">
+                <div className="w-12 h-12 rounded-2xl bg-[#18181b] flex items-center justify-center mb-2">
+                    <XCircle className="w-6 h-6 opacity-30" />
+                </div>
+                <span className="text-xs font-medium">No results found in database</span>
+                <span className="text-[10px] text-gray-800 font-mono">TARGET_CLEAN_OR_HIDDEN</span>
+            </div>
+        );
+    }
+
+    if (status === 'success' && results.length > 0) {
+        return (
+            <AnimatePresence>
+                {results.map((res, i) => (
+                    <motion.div 
+                        key={res.id || i}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.05 }}
+                        className="p-3 rounded-xl bg-[#141416] border border-white/5 hover:border-red-900/30 transition-colors group"
+                    >
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <div className={`w-1.5 h-1.5 rounded-full ${res.password ? 'bg-red-500' : 'bg-gray-600'}`}></div>
+                                <span className="text-xs font-bold text-gray-300 truncate max-w-[150px]">{res.database || 'Unknown Source'}</span>
+                            </div>
+                            <span className="text-[10px] text-gray-600 font-mono">{res.timestamp.split('T')[0]}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-sm text-gray-100 font-mono truncate max-w-[200px]">
+                                <span className="select-all">{res.identity}</span>
+                                <button
+                                    onClick={() => copyToClipboard(res.identity, `${res.id}-identity`)}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-white/10 rounded"
+                                    title="Copy Identity"
+                                >
+                                    {copiedStates[`${res.id}-identity`] ? (
+                                        <Check className="w-3 h-3 text-green-500" />
+                                    ) : (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-500 hover:text-white transition-colors">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                        </svg>
+                                    )}
+                                </button>
+                            </div>
+                            {res.password && res.password !== 'N/A' && (
+                                <div className="text-[10px] bg-red-500/10 text-red-500 px-2 py-0.5 rounded border border-red-500/20">
+                                    LEAK
+                                </div>
+                            )}
+                        </div>
+                        {res.password && res.password !== 'N/A' && (
+                            <div className="mt-2 pt-2 border-t border-white/5 text-xs text-gray-400 font-mono flex items-center gap-2 group/pass">
+                                <span>pass: <span className="text-white select-all">{res.password}</span></span>
+                                <button
+                                    onClick={() => copyToClipboard(res.password!, `${res.id}-password`)}
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-white/10 rounded"
+                                    title="Copy Password"
+                                >
+                                    {copiedStates[`${res.id}-password`] ? (
+                                        <Check className="w-3 h-3 text-green-500" />
+                                    ) : (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-500 hover:text-white transition-colors">
+                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                        </svg>
+                                    )}
+                                </button>
+                            </div>
+                        )}
+                        {res.extraInfo && res.extraInfo.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                                {res.extraInfo.map((info, idx) => (
+                                    <span key={idx} className="text-[9px] bg-[#1a1a1c] text-gray-500 px-1.5 py-0.5 rounded">
+                                        {info}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                    </motion.div>
+                ))}
+            </AnimatePresence>
+        );
+    }
+
+    // Idle State
+    return (
+        <div className="h-full flex flex-col items-center justify-center text-gray-700 space-y-2">
+            <div className="w-12 h-12 rounded-2xl bg-[#18181b] flex items-center justify-center mb-2">
+                <Search className="w-6 h-6 opacity-20" />
+            </div>
+            <span className="text-xs font-medium">Ready to scan</span>
+        </div>
+    );
+  };
+
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-[#050505] relative overflow-hidden p-4">
       
@@ -169,10 +303,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
 
         <div className="p-8 flex flex-col h-full gap-6">
             
-            {/* Search Bar Area - Only show if not in Admin Module or keep it always? 
-                Keeping it always is fine, but maybe disabled in admin mode for focus. 
-                Let's keep it visible but maybe opacity-50 if activeModule is admin.
-            */}
+            {/* Search Bar Area */}
             <div className={`relative group transition-opacity ${activeModule === 'admin' ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
                 <form onSubmit={handleSearch} className="relative flex items-center w-full h-16 bg-[#121214]/80 border border-white/5 rounded-2xl px-4 transition-all focus-within:border-white/20 focus-within:bg-[#161618] focus-within:shadow-[0_0_30px_rgba(220,38,38,0.1)]">
                     {/* Scan Icon */}
@@ -192,10 +323,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
                     <div className="flex items-center gap-3">
                         <button 
                             type="submit" 
-                            disabled={isLoading || activeModule === 'admin'}
+                            disabled={status === 'loading' || activeModule === 'admin'}
                             className="w-10 h-10 flex items-center justify-center bg-[#222] hover:bg-red-900/50 hover:text-red-200 text-white rounded-xl transition-all disabled:opacity-50"
                         >
-                            {isLoading ? (
+                            {status === 'loading' ? (
                                 <Activity className="w-5 h-5 animate-spin" />
                             ) : (
                                 <Search className="w-5 h-5" />
@@ -284,91 +415,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ role }) => {
 
                             {/* Scrollable Content */}
                             <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
-                                {isLoading ? (
-                                    <div className="h-full flex flex-col items-center justify-center text-gray-600 space-y-4">
-                                        <div className="w-6 h-6 border-2 border-t-red-500 border-red-900/20 rounded-full animate-spin"></div>
-                                        <span className="text-xs font-mono">QUERYING_NODES...</span>
-                                    </div>
-                                ) : results.length === 0 ? (
-                                    <div className="h-full flex flex-col items-center justify-center text-gray-700 space-y-2">
-                                        <div className="w-12 h-12 rounded-2xl bg-[#18181b] flex items-center justify-center mb-2">
-                                            <Search className="w-6 h-6 opacity-20" />
-                                        </div>
-                                        <span className="text-xs font-medium">Ready to scan</span>
-                                    </div>
-                                ) : (
-                                    <AnimatePresence>
-                                        {results.map((res, i) => (
-                                            <motion.div 
-                                                key={res.id || i}
-                                                initial={{ opacity: 0, y: 10 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                transition={{ delay: i * 0.05 }}
-                                                className="p-3 rounded-xl bg-[#141416] border border-white/5 hover:border-red-900/30 transition-colors group"
-                                            >
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <div className="flex items-center gap-2">
-                                                        <div className={`w-1.5 h-1.5 rounded-full ${res.password ? 'bg-red-500' : 'bg-gray-600'}`}></div>
-                                                        <span className="text-xs font-bold text-gray-300 truncate max-w-[150px]">{res.database || 'Unknown Source'}</span>
-                                                    </div>
-                                                    <span className="text-[10px] text-gray-600 font-mono">{res.timestamp.split('T')[0]}</span>
-                                                </div>
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex items-center gap-2 text-sm text-gray-100 font-mono truncate max-w-[200px]">
-                                                        <span className="select-all">{res.identity}</span>
-                                                        <button
-                                                            onClick={() => copyToClipboard(res.identity, `${res.id}-identity`)}
-                                                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-white/10 rounded"
-                                                            title="Copy Identity"
-                                                        >
-                                                            {copiedStates[`${res.id}-identity`] ? (
-                                                                <Check className="w-3 h-3 text-green-500" />
-                                                            ) : (
-                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-500 hover:text-white transition-colors">
-                                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                                                </svg>
-                                                            )}
-                                                        </button>
-                                                    </div>
-                                                    {res.password && res.password !== 'N/A' && (
-                                                        <div className="text-[10px] bg-red-500/10 text-red-500 px-2 py-0.5 rounded border border-red-500/20">
-                                                            LEAK
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                {res.password && res.password !== 'N/A' && (
-                                                    <div className="mt-2 pt-2 border-t border-white/5 text-xs text-gray-400 font-mono flex items-center gap-2 group/pass">
-                                                        <span>pass: <span className="text-white select-all">{res.password}</span></span>
-                                                        <button
-                                                            onClick={() => copyToClipboard(res.password!, `${res.id}-password`)}
-                                                            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-white/10 rounded"
-                                                            title="Copy Password"
-                                                        >
-                                                            {copiedStates[`${res.id}-password`] ? (
-                                                                <Check className="w-3 h-3 text-green-500" />
-                                                            ) : (
-                                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-500 hover:text-white transition-colors">
-                                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                                                </svg>
-                                                            )}
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                {res.extraInfo && res.extraInfo.length > 0 && (
-                                                    <div className="mt-2 flex flex-wrap gap-1">
-                                                        {res.extraInfo.map((info, idx) => (
-                                                            <span key={idx} className="text-[9px] bg-[#1a1a1c] text-gray-500 px-1.5 py-0.5 rounded">
-                                                                {info}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </motion.div>
-                                        ))}
-                                    </AnimatePresence>
-                                )}
+                                {renderContent()}
                             </div>
                             
                             {/* Result Footer */}
