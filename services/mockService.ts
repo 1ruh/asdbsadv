@@ -78,29 +78,41 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
   const type = isEmail ? 'email' : 'username';
   const encodedQuery = encodeURIComponent(query);
   
-  // We attach the key to the URL to avoid header stripping issues with some proxies
-  const targetPath = `${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
-  const targetFullUrl = `https://leakcheck.io/api/v2/query/${targetPath}`;
-
   // Strategy 1: Try Netlify Rewrite (Relative Path)
-  // This works if _redirects is active on the host
+  // When using the rewrite, we should pass the API key in the headers as intended by standard API usage.
   try {
-      const relativeUrl = `/api/leakcheck/${targetPath}`;
-      const response = await fetch(relativeUrl);
-      // We check if the response is actually JSON and not a 404/HTML page
+      // NOTE: Do not include `key` in the URL query params when using headers for the direct rewrite
+      const relativePath = `${encodedQuery}?type=${type}`;
+      const relativeUrl = `/api/leakcheck/${relativePath}`;
+      
+      console.log(`[EXI] Attempting Strategy 1 (Direct Rewrite): ${relativeUrl}`);
+      
+      const response = await fetch(relativeUrl, {
+          method: 'GET',
+          headers: {
+              'X-API-Key': LEAKCHECK_API_KEY,
+              'Accept': 'application/json'
+          }
+      });
+      
       const contentType = response.headers.get("content-type");
       if (response.ok && contentType && contentType.includes("application/json")) {
           const data = await response.json();
           if (data.success && data.result) {
               return mapResults(data.result, query, isEmail);
+          } else if (data.success && (!data.result || data.result.length === 0)) {
+              // Valid response, but no data found
+              return [];
           }
       }
   } catch (e) {
-      console.warn("Direct rewrite fetch failed, switching to proxies...", e);
+      console.warn("[EXI] Strategy 1 failed:", e);
   }
 
   // Strategy 2: Fallback to Public CORS Proxies
-  // We try them in order.
+  // For these, we MUST put the key in the URL because we can't reliably pass headers through all proxies.
+  const targetFullUrl = `https://leakcheck.io/api/v2/query/${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
+  
   const proxyEndpoints = [
       `https://corsproxy.io/?${encodeURIComponent(targetFullUrl)}`,
       `https://api.allorigins.win/raw?url=${encodeURIComponent(targetFullUrl)}`
@@ -108,28 +120,29 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
 
   for (const proxyUrl of proxyEndpoints) {
       try {
-        console.log(`Attempting proxy: ${proxyUrl}`);
+        console.log(`[EXI] Attempting Proxy: ${proxyUrl}`);
         const response = await fetch(proxyUrl);
         
         if (!response.ok) {
            const err = await response.text();
-           console.error(`Proxy Error ${response.status}:`, err);
+           console.warn(`[EXI] Proxy Error ${response.status}:`, err);
            continue;
         }
 
         const data = await response.json();
 
-        if (data.success && data.result) {
-            return mapResults(data.result, query, isEmail);
+        // Check specifically for success boolean or result array
+        if (data.success) {
+             return mapResults(data.result || [], query, isEmail);
         }
       } catch (e) {
-        console.error("Proxy Request Failed", e);
-        // Continue to next proxy
+        console.warn("[EXI] Proxy Request Failed", e);
       }
   }
 
-  // If all failed
-  return [];
+  // If all strategies fail, we throw an error so the UI shows "Connection Failed"
+  // instead of just "No Results" (which implies the person is safe).
+  throw new Error("All fetch strategies failed");
 };
 
 export const verifyLicenseKey = async (key: string): Promise<{isValid: boolean, role: 'admin' | 'user'}> => {
