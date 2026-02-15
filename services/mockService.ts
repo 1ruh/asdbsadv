@@ -1,6 +1,6 @@
 import { SearchResult } from '../types';
 
-const LEAKCHECK_API_KEY = "4344cd645b6e6cc2559c1a92017d9bfa12e4e4b1";
+const LEAKCHECK_API_KEY = "41qD7LKkWTASU6NppHm2j1fvwmegkzoLjo";
 const STORAGE_KEY = 'exi_generated_keys';
 
 const getStoredKeys = (): string[] => {
@@ -27,38 +27,9 @@ export const getActiveKeys = (): string[] => {
     return getStoredKeys();
 };
 
-export const searchDatabase = async (query: string): Promise<SearchResult[]> => {
-  const isEmail = query.includes('@');
-  const type = isEmail ? 'email' : 'username';
-
-  // We must use a CORS proxy because browsers block direct requests to the LeakCheck API
-  // due to missing Access-Control-Allow-Origin headers on their server.
-  const targetUrl = `https://leakcheck.io/api/v2/query/${encodeURIComponent(query)}?type=${type}`;
-  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
-
-  try {
-    const response = await fetch(proxyUrl, {
-      method: 'GET',
-      headers: {
-        'X-API-Key': LEAKCHECK_API_KEY,
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      // Attempt to read error text
-      const errText = await response.text();
-      console.error(`API Error: ${response.status} ${response.statusText}`, errText);
-      return [];
-    }
-
-    const data = await response.json();
-
-    if (!data.success || !data.result) {
-      return [];
-    }
-
-    return data.result.map((item: any) => {
+// Helper to map API results to our app type
+const mapResults = (apiResults: any[], query: string, isEmail: boolean): SearchResult[] => {
+    return apiResults.map((item: any) => {
       let identity = query;
       let password = 'N/A';
       
@@ -100,11 +71,65 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
         timestamp: new Date().toISOString()
       };
     });
+};
 
+export const searchDatabase = async (query: string): Promise<SearchResult[]> => {
+  const isEmail = query.includes('@');
+  const type = isEmail ? 'email' : 'username';
+  const encodedQuery = encodeURIComponent(query);
+  
+  // We attach the key to the URL to avoid header stripping issues with some proxies
+  const targetPath = `${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
+  const targetFullUrl = `https://leakcheck.io/api/v2/query/${targetPath}`;
+
+  // Strategy 1: Try Netlify Rewrite (Relative Path)
+  // This works if _redirects is active on the host
+  try {
+      const relativeUrl = `/api/leakcheck/${targetPath}`;
+      const response = await fetch(relativeUrl);
+      // We check if the response is actually JSON and not a 404/HTML page
+      const contentType = response.headers.get("content-type");
+      if (response.ok && contentType && contentType.includes("application/json")) {
+          const data = await response.json();
+          if (data.success && data.result) {
+              return mapResults(data.result, query, isEmail);
+          }
+      }
   } catch (e) {
-    console.error("LeakCheck API Request Failed", e);
-    return [];
+      console.warn("Direct rewrite fetch failed, switching to proxies...", e);
   }
+
+  // Strategy 2: Fallback to Public CORS Proxies
+  // We try them in order.
+  const proxyEndpoints = [
+      `https://corsproxy.io/?${encodeURIComponent(targetFullUrl)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(targetFullUrl)}`
+  ];
+
+  for (const proxyUrl of proxyEndpoints) {
+      try {
+        console.log(`Attempting proxy: ${proxyUrl}`);
+        const response = await fetch(proxyUrl);
+        
+        if (!response.ok) {
+           const err = await response.text();
+           console.error(`Proxy Error ${response.status}:`, err);
+           continue;
+        }
+
+        const data = await response.json();
+
+        if (data.success && data.result) {
+            return mapResults(data.result, query, isEmail);
+        }
+      } catch (e) {
+        console.error("Proxy Request Failed", e);
+        // Continue to next proxy
+      }
+  }
+
+  // If all failed
+  return [];
 };
 
 export const verifyLicenseKey = async (key: string): Promise<{isValid: boolean, role: 'admin' | 'user'}> => {
@@ -122,7 +147,6 @@ export const verifyLicenseKey = async (key: string): Promise<{isValid: boolean, 
       const storedKeys = getStoredKeys();
       
       // Allow legacy PLZM/EXI prefixes OR stored keys
-      // This ensures generated keys work, and legacy demo keys still work
       const isValid = 
         normalizedKey.startsWith('EXI') || 
         normalizedKey.startsWith('PLZM') || 
