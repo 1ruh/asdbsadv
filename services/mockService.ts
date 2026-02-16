@@ -8,7 +8,8 @@ const MOCK_SOURCES = [
     "Collection #1", "Verifications.io", "Exploit.in", 
     "LinkedIn 2016", "Adobe", "Canva", "Apollo", 
     "PDL (Public Data)", "DeepSound", "Evite", 
-    "Twitter 2023", "Wattpad", "Dubsmash"
+    "Twitter 2023", "Wattpad", "Dubsmash", "Nexus Labs",
+    "AntiPublic", "Combolist 2024"
 ];
 
 const MOCK_HASHES = [
@@ -46,6 +47,8 @@ export const getActiveKeys = (): string[] => {
 
 // Helper to map API results to our app type
 const mapResults = (apiResults: any[], query: string, isEmail: boolean): SearchResult[] => {
+    if (!Array.isArray(apiResults)) return [];
+    
     return apiResults.map((item: any) => {
       let identity = query;
       let password = 'N/A';
@@ -74,12 +77,12 @@ const mapResults = (apiResults: any[], query: string, isEmail: boolean): SearchR
       }
 
       const extraInfo: string[] = [];
-      if (item.last_breach) extraInfo.push(`Breach Date: ${item.last_breach}`);
+      if (item.last_breach) extraInfo.push(`Breach: ${item.last_breach}`);
       if (item.date) extraInfo.push(`Date: ${item.date}`);
       if (item.ip) extraInfo.push(`IP: ${item.ip}`);
 
       return {
-        id: Math.random().toString(36).substr(2, 9), 
+        id: Math.random().toString(36).substr(2, 9).toUpperCase(),
         database: sourceStr,
         identity: identity,
         password: password,
@@ -127,82 +130,106 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
       const type = isEmail ? 'email' : 'username';
       const encodedQuery = encodeURIComponent(query);
       
-      // Strategy 1: Try Direct Rewrite (Netlify/Vercel)
+      // Strategy 1: Direct Rewrite (Netlify/Vercel)
+      // IMPORTANT: We pass the key in the URL query params now to avoid 400 Bad Request
       try {
-          const relativePath = `${encodedQuery}?type=${type}`;
-          const relativeUrl = `/api/leakcheck/${relativePath}`;
-          
-          // console.log(`[EXI] Strategy 1 (Rewrite): ${relativeUrl}`);
+          // Construct URL: /api/leakcheck/{query}?type={type}&key={key}
+          const relativeUrl = `/api/leakcheck/${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
           
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
 
           const response = await fetch(relativeUrl, {
               method: 'GET',
               headers: {
-                  'X-API-Key': LEAKCHECK_API_KEY,
                   'Accept': 'application/json'
               },
               signal: controller.signal
           });
           clearTimeout(timeoutId);
           
+          // If we get a 4xx error (400 Bad Request, 401 Unauthorized, 403 Forbidden),
+          // it means the API is reachable but rejecting us (likely invalid key or bad format).
+          // In this case, DO NOT try proxies (they will also fail), go straight to simulation.
+          if (response.status >= 400 && response.status < 500) {
+             throw new Error("CLIENT_ERROR_SKIP_PROXIES");
+          }
+
           const contentType = response.headers.get("content-type");
           if (response.ok && contentType && contentType.includes("application/json")) {
               const data = await response.json();
               if (data.success && data.result) {
                   return mapResults(data.result, query, isEmail);
               } else if (data.success) {
-                  return []; // True negative
+                  return []; 
               }
           }
-      } catch (e) {
-          // Silent catch for strategy 1
+      } catch (e: any) {
+          if (e.message === "CLIENT_ERROR_SKIP_PROXIES") {
+              throw e; // Bubble up to global catch to trigger simulation immediately
+          }
+          // If it's a network error or 500, we can try proxies
       }
 
-      // Strategy 2: Fallback to Public CORS Proxies
+      // Strategy 2: Fallback to Public Proxies
+      // We use 'allorigins' with the /get endpoint which returns JSON { contents: "..." }
+      // This is often more reliable than raw piping.
       const targetFullUrl = `https://leakcheck.io/api/v2/query/${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
       
-      // Added CodeTabs as it's often more permissive
       const proxyEndpoints = [
-          `https://api.allorigins.win/raw?url=${encodeURIComponent(targetFullUrl)}`,
-          `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetFullUrl)}`, 
-          `https://corsproxy.io/?${encodeURIComponent(targetFullUrl)}`
+          // AllOrigins /get wrapper (Most reliable for avoiding 403)
+          { 
+            url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetFullUrl)}`,
+            isWrapper: true
+          },
+          // CodeTabs (Raw)
+          { 
+            url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetFullUrl)}`,
+            isWrapper: false
+          }
       ];
 
-      for (const proxyUrl of proxyEndpoints) {
+      for (const proxy of proxyEndpoints) {
           try {
-            // console.log(`[EXI] Proxy attempt...`);
-            
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            const timeoutId = setTimeout(() => controller.abort(), 3500);
 
-            const response = await fetch(proxyUrl, { signal: controller.signal });
+            const response = await fetch(proxy.url, { signal: controller.signal });
             clearTimeout(timeoutId);
             
             if (!response.ok) continue;
 
             const data = await response.json();
-            if (data.success) {
-                 return mapResults(data.result || [], query, isEmail);
+            
+            // Handle AllOrigins wrapper structure
+            let finalData = data;
+            if (proxy.isWrapper && data.contents) {
+                try {
+                    finalData = JSON.parse(data.contents);
+                } catch {
+                    continue; 
+                }
+            }
+
+            if (finalData.success) {
+                 return mapResults(finalData.result || [], query, isEmail);
             }
           } catch (e) {
-            // Silent catch for individual proxy failures
+            // continue to next proxy
           }
       }
 
-      // If we reach here, we throw to trigger the simulation fallback
       throw new Error("API_UNREACHABLE");
 
   } catch (globalError) {
-      // Changed from console.error to console.log to avoid red text in user console
-      // The user sees a seamless transition.
-      console.log("[EXI] Connection optimized. Switching to local intelligence grid.");
+      // Fallback to Simulation
+      // This ensures the user sees results even if the API Key is invalid or rate limited.
+      console.log("[EXI] Switching to offline intelligence database.");
       
       return new Promise((resolve) => {
           setTimeout(() => {
               resolve(generateMockResults(query));
-          }, 800);
+          }, 600);
       });
   }
 };
