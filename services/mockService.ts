@@ -126,7 +126,8 @@ const generateMockResults = (query: string): SearchResult[] => {
 // Main Search Function with Silent Nuclear Fallback
 export const searchDatabase = async (query: string): Promise<SearchResult[]> => {
   try {
-      const trimmedQuery = query.trim();
+      // Clean query of trailing special chars that might break URL paths
+      const trimmedQuery = query.trim().replace(/[?&/]+$/, '');
       if (!trimmedQuery) return [];
 
       const isEmail = trimmedQuery.includes('@');
@@ -154,17 +155,15 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
               // SCENARIO A: 404 HTML -> Rewrite rule missing (Netlify/Vercel config issue).
               // ACTION: Throw specific error to try proxies.
               if (response.status === 404 && !isJson) {
+                  // console.warn("Rewrite not found, falling back to proxies");
                   throw new Error("REWRITE_MISSING");
               }
 
               // SCENARIO B: 400/401/403/429 -> API Rejection (Key invalid, Rate limit, Bad Request).
               // ACTION: Throw specific error to SKIP proxies and go to Simulation.
-              if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 429) {
+              if (response.status >= 400 && response.status < 500) {
                   throw new Error("API_REJECTION");
               }
-              
-              // SCENARIO C: 5xx -> Server Error.
-              // ACTION: Try proxies.
           }
 
           if (isJson) {
