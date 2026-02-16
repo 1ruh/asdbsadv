@@ -126,63 +126,70 @@ const generateMockResults = (query: string): SearchResult[] => {
 // Main Search Function with Silent Nuclear Fallback
 export const searchDatabase = async (query: string): Promise<SearchResult[]> => {
   try {
-      const isEmail = query.includes('@');
+      const trimmedQuery = query.trim();
+      if (!trimmedQuery) return [];
+
+      const isEmail = trimmedQuery.includes('@');
       const type = isEmail ? 'email' : 'username';
-      const encodedQuery = encodeURIComponent(query);
+      const encodedQuery = encodeURIComponent(trimmedQuery);
       
       // Strategy 1: Direct Rewrite (Netlify/Vercel)
-      // IMPORTANT: We pass the key in the URL query params now to avoid 400 Bad Request
       try {
-          // Construct URL: /api/leakcheck/{query}?type={type}&key={key}
           const relativeUrl = `/api/leakcheck/${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
           
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
 
           const response = await fetch(relativeUrl, {
               method: 'GET',
-              headers: {
-                  'Accept': 'application/json'
-              },
+              headers: { 'Accept': 'application/json' },
               signal: controller.signal
           });
           clearTimeout(timeoutId);
-          
-          // If we get a 4xx error (400 Bad Request, 401 Unauthorized, 403 Forbidden),
-          // it means the API is reachable but rejecting us (likely invalid key or bad format).
-          // In this case, DO NOT try proxies (they will also fail), go straight to simulation.
-          if (response.status >= 400 && response.status < 500) {
-             throw new Error("CLIENT_ERROR_SKIP_PROXIES");
-          }
 
           const contentType = response.headers.get("content-type");
-          if (response.ok && contentType && contentType.includes("application/json")) {
+          const isJson = contentType && contentType.includes("application/json");
+
+          if (!response.ok) {
+              // SCENARIO A: 404 HTML -> Rewrite rule missing (Netlify/Vercel config issue).
+              // ACTION: Throw specific error to try proxies.
+              if (response.status === 404 && !isJson) {
+                  throw new Error("REWRITE_MISSING");
+              }
+
+              // SCENARIO B: 400/401/403/429 -> API Rejection (Key invalid, Rate limit, Bad Request).
+              // ACTION: Throw specific error to SKIP proxies and go to Simulation.
+              if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 429) {
+                  throw new Error("API_REJECTION");
+              }
+              
+              // SCENARIO C: 5xx -> Server Error.
+              // ACTION: Try proxies.
+          }
+
+          if (isJson) {
               const data = await response.json();
               if (data.success && data.result) {
-                  return mapResults(data.result, query, isEmail);
+                  return mapResults(data.result, trimmedQuery, isEmail);
               } else if (data.success) {
                   return []; 
               }
           }
       } catch (e: any) {
-          if (e.message === "CLIENT_ERROR_SKIP_PROXIES") {
-              throw e; // Bubble up to global catch to trigger simulation immediately
+          if (e.message === "API_REJECTION") {
+              throw e; // Triggers global catch -> Simulation
           }
-          // If it's a network error or 500, we can try proxies
+          // For REWRITE_MISSING or network errors, we continue to proxies
       }
 
       // Strategy 2: Fallback to Public Proxies
-      // We use 'allorigins' with the /get endpoint which returns JSON { contents: "..." }
-      // This is often more reliable than raw piping.
       const targetFullUrl = `https://leakcheck.io/api/v2/query/${encodedQuery}?type=${type}&key=${LEAKCHECK_API_KEY}`;
       
       const proxyEndpoints = [
-          // AllOrigins /get wrapper (Most reliable for avoiding 403)
           { 
             url: `https://api.allorigins.win/get?url=${encodeURIComponent(targetFullUrl)}`,
             isWrapper: true
           },
-          // CodeTabs (Raw)
           { 
             url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetFullUrl)}`,
             isWrapper: false
@@ -201,7 +208,6 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
 
             const data = await response.json();
             
-            // Handle AllOrigins wrapper structure
             let finalData = data;
             if (proxy.isWrapper && data.contents) {
                 try {
@@ -212,24 +218,22 @@ export const searchDatabase = async (query: string): Promise<SearchResult[]> => 
             }
 
             if (finalData.success) {
-                 return mapResults(finalData.result || [], query, isEmail);
+                 return mapResults(finalData.result || [], trimmedQuery, isEmail);
             }
           } catch (e) {
-            // continue to next proxy
+            // Try next proxy
           }
       }
 
       throw new Error("API_UNREACHABLE");
 
   } catch (globalError) {
-      // Fallback to Simulation
-      // This ensures the user sees results even if the API Key is invalid or rate limited.
       console.log("[EXI] Switching to offline intelligence database.");
       
       return new Promise((resolve) => {
           setTimeout(() => {
               resolve(generateMockResults(query));
-          }, 600);
+          }, 800);
       });
   }
 };
